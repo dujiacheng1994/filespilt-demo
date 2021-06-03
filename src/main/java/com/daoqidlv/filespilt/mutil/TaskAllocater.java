@@ -30,7 +30,7 @@ public class TaskAllocater {
     /**
      * 行最大字节数
      */
-    private int maxLineSize;
+    private int maxLineSize;        // 要小于 avgToReadSize = originFileSize / this.readTaskNum
     /**
      * 文件切割器
      */
@@ -65,14 +65,14 @@ public class TaskAllocater {
         int originFileSize = 0;
         try {
             originFile = new RandomAccessFile(this.originFileFullName, "r");  // 这个只是为了能够快速定位行尾指针，之后还会用别的文件形式真正读取
-            originFileSize = (int) originFile.length();            //取得文件长度（字节数）
+            originFileSize = (int) originFile.length();   // 取得文件长度（字节数）
         } catch (FileNotFoundException e) {
             e.printStackTrace();
         } catch (IOException e) {
             e.printStackTrace();
         }
 
-        int avgToReadSize = originFileSize / this.readTaskNum;        // 每个读线程要读的大小
+        int avgToReadSize = originFileSize / this.readTaskNum;   // 每个读线程要读的大小
 
         List<FileReadTask> taskList = new ArrayList<FileReadTask>();
         int lastEndFilePointer = -1;
@@ -86,7 +86,7 @@ public class TaskAllocater {
 
             } else {
                 revisedEndFilePointer = reviseEndFilePointer(lastEndFilePointer + avgToReadSize, originFile);     // 正常的会读avgToReadSize大小，用reviseEndFilePointer修正保证尾指针指到完整行
-                task = new FileReadTask(i, lastEndFilePointer + 1, revisedEndFilePointer, this.originFileFullName, this.queue); // 创建read任务，传入首尾指针，可行破碎怎么办
+                task = new FileReadTask(i, lastEndFilePointer + 1, revisedEndFilePointer, this.originFileFullName, this.queue); // 创建read任务，传入首尾指针，如果行超了，这里会返回[lastend+1, ???]，不一定以\n结尾
                 lastEndFilePointer = revisedEndFilePointer;
             }
             taskList.add(task); // 把任务加到读取任务列表
@@ -103,22 +103,23 @@ public class TaskAllocater {
      * @return revisedEndFilePointer —— 修正后的endFilePointer
      * TODO 此方案需要提前给定最大行大小，这个在实际情况时，很难有这个限定，待优化。
      */
+    // 最终返回的指针是\n，但如果数据最大行超了，可能最后也找不到，就返回起始了
     private int reviseEndFilePointer(int endFilePointer, RandomAccessFile originFile) {
         int revisedEndFilePointer = endFilePointer;
         byte[] tempBytes = new byte[this.maxLineSize];
         try {
-            originFile.seek(endFilePointer - this.maxLineSize + 1);
-            originFile.readFully(tempBytes);
+            originFile.seek(endFilePointer - this.maxLineSize + 1); // RandomAccessFile的方法，设置读写指针，到起始处
+            originFile.readFully(tempBytes); // todo: 读取最大行，实际没多少，也就十几个字节
         } catch (IOException e) {
             e.printStackTrace();
         }
 
         int revisedNum = 0;
         for (int i = tempBytes.length - 1; i >= 1; i--) {
-            if (Constants.ENTER_CHAR_ASCII == tempBytes[i - 1] && Constants.NEW_LINE_CHAR_ASCII == tempBytes[i]) {             //换行符或者回车符，做修正
+            if (Constants.ENTER_CHAR_ASCII == tempBytes[i - 1] && Constants.NEW_LINE_CHAR_ASCII == tempBytes[i]) {   // todo: 修改成\n, 如果i-1,i分别是\r\n, 就退出
                 break;
             } else {
-                revisedNum++;
+                revisedNum++; // 如果一开始结尾就是\r\n，这里就是0，不然就要增加
             }
         }
         return revisedEndFilePointer - revisedNum;
